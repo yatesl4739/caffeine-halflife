@@ -7,15 +7,16 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<main class="app-container">
+    <h1>Caffeine Calculator</h1>
+    <p id="clock">Current time: loading</p>
+    <p>Enter caffeine amount in mg</p>
+    <input type="text" id="caffeine-input" placeholder="mg">
+    <button id="action-btn">Calculate</button>
 
-    <main class="app-container">
-        <h1>Caffeine Calculator</h1>
-        <p id="clock">Current time: loading</p>
-        <p>Enter caffeine amount in mg</p>
-        <input type="text" id="caffeine-input" placeholder="mg">
-        <button id="action-btn">Calculate</button>
-    </main>
-
-    <script src="script.js"></script>
+    <p id="summary"></p>
+    <canvas id="chart"></canvas>
+</main>
+<script src="script.js"></script>
 </body>
 </html>
