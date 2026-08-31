@@ -13,3 +13,59 @@
     font-weight: 600;
     min-height: 1.2em;
 }
+
+#gauge {
+    width: 100%;
+    max-width: 340px;
+    display: block;
+    margin: 0 auto;
+    touch-action: none;
+    user-select: none;
+    cursor: pointer;
+}
+
+#gauge:focus-visible {
+    outline: 2px solid #3b7dd8;
+    outline-offset: 4px;
+    border-radius: 8px;
+}
+
+.gauge-track {
+    fill: none;
+    stroke: #e2e2e2;
+    stroke-width: 14;
+    stroke-linecap: round;
+}
+
+.gauge-progress {
+    fill: none;
+    stroke: #67320a;
+    stroke-width: 14;
+    stroke-linecap: round;
+    stroke-dasharray: 100;
+}
+
+.gauge-handle {
+    fill: #fff;
+    stroke: #67320a;
+    stroke-width: 4;
+}
+
+.gauge-value {
+    text-anchor: middle;
+    font-size: 46px;
+    font-weight: 600;
+    fill: #333;
+}
+
+.gauge-unit {
+    text-anchor: middle;
+    font-size: 16px;
+    fill: #777;
+}
+
+.gauge-end {
+    text-anchor: middle;
+    font-size: 13px;
+    fill: #999;
+}

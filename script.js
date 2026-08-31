@@ -2,14 +2,24 @@
 const HALF_LIFE_HOURS = 5;
 const HOURS_TO_PLOT = 24;
 const LOW_THRESHOLD_MG = 50;
+const MIN_MG = 0;
+const MAX_MG = 600;
+const STEP_MG = 5;
+const CX = 150, CY = 150, R = 120;   // must match the SVG path
+
 
 // ELEMENTS
 const submitButton = document.getElementById('action-btn');
-const textBox = document.getElementById('caffeine-input');
 const clock = document.getElementById('clock');
 const summary = document.getElementById('summary');
 const canvas = document.getElementById('chart');
 const ctx = canvas.getContext('2d');
+const gauge = document.getElementById('gauge');
+const gaugeProgress = document.getElementById('gauge-progress');
+const gaugeHandle = document.getElementById('gauge-handle');
+const gaugeValue = document.getElementById('gauge-value');
+
+
 
 // STATE
 let dose = null; // { amount, time }
@@ -33,23 +43,78 @@ function niceMax(value) {
     return Math.ceil(value / step) * step;
 }
 
+
+// SLIDER
+let caffeineValue = 95;
+
+function setValue(v) {
+    v = Math.round(v / STEP_MG) * STEP_MG;
+    caffeineValue = Math.min(MAX_MG, Math.max(MIN_MG, v));
+
+    const t = (caffeineValue - MIN_MG) / (MAX_MG - MIN_MG);
+    const angle = Math.PI * (1 - t);   // pi at the left end, 0 at the right
+
+    gaugeProgress.style.strokeDashoffset = 100 - t * 100;
+    gaugeHandle.setAttribute('cx', CX + R * Math.cos(angle));
+    gaugeHandle.setAttribute('cy', CY - R * Math.sin(angle));
+    gaugeValue.textContent = caffeineValue;
+    gauge.setAttribute('aria-valuenow', caffeineValue);
+}
+
+function valueFromPointer(clientX, clientY) {
+    const rect = gauge.getBoundingClientRect();
+    const scale = 300 / rect.width;             // viewBox width / rendered width
+    const dx = (clientX - rect.left) * scale - CX;
+    const dy = CY - (clientY - rect.top) * scale;  // flip y so up is positive
+
+    let angle = Math.atan2(dy, dx);
+    if (angle < 0) angle = dx >= 0 ? 0 : Math.PI;  // below the flat edge: snap to an end
+
+    const t = 1 - angle / Math.PI;
+    return MIN_MG + t * (MAX_MG - MIN_MG);
+}
+
+let dragging = false;
+
+gauge.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    gauge.setPointerCapture(e.pointerId);
+    setValue(valueFromPointer(e.clientX, e.clientY));
+});
+
+gauge.addEventListener('pointermove', (e) => {
+    if (dragging) setValue(valueFromPointer(e.clientX, e.clientY));
+});
+
+gauge.addEventListener('pointerup', () => { dragging = false; });
+gauge.addEventListener('pointercancel', () => { dragging = false; });
+
+gauge.addEventListener('keydown', (e) => {
+    const keys = {
+        ArrowRight: STEP_MG, ArrowUp: STEP_MG,
+        ArrowLeft: -STEP_MG, ArrowDown: -STEP_MG,
+        PageUp: STEP_MG * 5, PageDown: -STEP_MG * 5
+    };
+    if (e.key in keys) setValue(caffeineValue + keys[e.key]);
+    else if (e.key === 'Home') setValue(MIN_MG);
+    else if (e.key === 'End') setValue(MAX_MG);
+    else return;
+    e.preventDefault();
+});
+
+setValue(caffeineValue);
 // HANDLE CAFFEINE INPUT
 function handleSubmit() {
-    const caffeineAmount = parseFloat(textBox.value);
-
-    if (isNaN(caffeineAmount) || caffeineAmount <= 0) {
-        alert('Please enter a valid caffeine amount greater than 0.');
+    if (caffeineValue <= 0) {
+        alert('Set an amount greater than 0 mg.');
         return;
     }
 
-    dose = { amount: caffeineAmount, time: new Date() };
+    dose = { amount: caffeineValue, time: new Date() };
     render();
 }
 
 submitButton.addEventListener('click', handleSubmit);
-textBox.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') handleSubmit();
-});
 
 // SUMMARY TEXT
 function updateSummary() {
@@ -133,7 +198,7 @@ function drawChart() {
         if (h === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
     }
-    ctx.strokeStyle = '#c0562b';
+    ctx.strokeStyle = '#67320a';
     ctx.lineWidth = 2;
     ctx.stroke();
 
