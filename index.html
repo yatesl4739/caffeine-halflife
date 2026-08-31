@@ -14,10 +14,21 @@
     <h1>Caffeine Calculator</h1>
     <p id="clock">Current time: loading</p>
     <p>Enter caffeine amount in mg</p>
-    <div>
-        <input type="text" id="caffeine-input" placeholder="mg">
-    </div>
-    <button id="action-btn">Calculate</button>
+    <p>Drag to set caffeine amount</p>
+
+    <svg id="gauge" viewBox="0 0 300 175" role="slider" tabindex="0"
+     aria-label="Caffeine amount in milligrams"
+     aria-valuemin="0" aria-valuemax="600" aria-valuenow="95">
+    <path class="gauge-track" d="M 30 150 A 120 120 0 0 1 270 150" pathLength="100"/>
+    <path id="gauge-progress" class="gauge-progress" d="M 30 150 A 120 120 0 0 1 270 150" pathLength="100"/>
+    <circle id="gauge-handle" class="gauge-handle" r="11"/>
+    <text id="gauge-value" class="gauge-value" x="150" y="120">95</text>
+    <text class="gauge-unit" x="150" y="145">mg</text>
+    <text class="gauge-end" x="30" y="170">0</text>
+    <text class="gauge-end" x="270" y="170">600</text>
+    </svg>
+
+<button id="action-btn">Calculate</button>
 
     <p id="summary"></p>
     <canvas id="chart"></canvas>
