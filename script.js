@@ -23,7 +23,25 @@ const reverseButton = document.getElementById('reverse-btn');
 const reverseResult = document.getElementById('reverse-result');
 const drinkOptions = document.getElementById('drink-options');
 
+//say hello!
+const coffee = String.raw`
+          ( (
+           ) )
+        ........
+        |      |]
+        \      /
+         \____/
+       __________
+      |__________|
 
+    Caffeine Calculator
+    Made by Liam Yates
+`;
+
+console.log(
+  "%c" + coffee,
+  "color: #B87333; font-family: monospace; font-size: 18px; font-weight: bold; line-height: 1.3;"
+);
 
 // STATE
 let dose = null; // { amount, time }
