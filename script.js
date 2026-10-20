@@ -18,6 +18,10 @@ const gauge = document.getElementById('gauge');
 const gaugeProgress = document.getElementById('gauge-progress');
 const gaugeHandle = document.getElementById('gauge-handle');
 const gaugeValue = document.getElementById('gauge-value');
+const targetTimeInput = document.getElementById('target-time');
+const reverseButton = document.getElementById('reverse-btn');
+const reverseResult = document.getElementById('reverse-result');
+const drinkOptions = document.getElementById('drink-options');
 
 
 
@@ -111,10 +115,180 @@ function handleSubmit() {
     }
 
     dose = { amount: caffeineValue, time: new Date() };
+    reverseResult.textContent = '';   // the old recommendation no longer matches
+    clearDrinkOptions();
     render();
 }
 
 submitButton.addEventListener('click', handleSubmit);
+
+
+// KNOWN DRINKS
+// Figures are per standard serving. Brewed coffee varies a lot with beans and
+// brew method; the rest are label values and are fairly consistent.
+const DRINKS = [
+    { name: 'espresso shot', mg: 64 },
+    { name: 'Starbucks grande matcha latte', mg: 65 },
+    { name: 'Red Bull (8.4 oz)', mg: 80 },
+    { name: 'brewed coffee (8 oz)', mg: 95 },
+    { name: 'Monster Energy (16 oz)', mg: 160 }
+];
+
+const MAX_DRINKS_PER_PLAN = 3;
+const PLANS_TO_SHOW = 3;
+
+// Walk every combination of up to MAX_DRINKS_PER_PLAN drinks and rank them by
+// how close they land to the target.
+function bestCombos(targetMg) {
+    const combos = [];
+    const counts = new Array(DRINKS.length).fill(0);
+
+    (function walk(i, used, total) {
+        if (i === DRINKS.length) {
+            if (used > 0) combos.push({ counts: counts.slice(), total: total, used: used });
+            return;
+        }
+        for (let n = 0; used + n <= MAX_DRINKS_PER_PLAN; n++) {
+            counts[i] = n;
+            walk(i + 1, used + n, total + n * DRINKS[i].mg);
+        }
+        counts[i] = 0;
+    })(0, 0, 0);
+
+    combos.forEach((c) => {
+        c.diff = c.total - targetMg;
+        // Undershooting means waking up early, so weight it worse than overshooting.
+        // The small per-drink term breaks ties toward the simpler plan.
+        c.score = (c.diff >= 0 ? c.diff : -c.diff * 1.5) + c.used * 2;
+    });
+
+    combos.sort((a, b) => a.score - b.score || a.used - b.used);
+
+    // Keep one plan per distinct total, so the list shows real alternatives
+    // rather than three ways of adding up to the same number.
+    const seenTotals = new Set();
+    const picks = [];
+    for (const c of combos) {
+        if (seenTotals.has(c.total)) continue;
+        seenTotals.add(c.total);
+        picks.push(c);
+        if (picks.length === PLANS_TO_SHOW) break;
+    }
+    return picks;
+}
+
+function describeCombo(combo) {
+    const parts = [];
+    combo.counts.forEach((n, i) => {
+        if (n > 0) parts.push(`${n} × ${DRINKS[i].name}`);
+    });
+    return parts.join(' + ');
+}
+
+function addLine(text) {
+    const p = document.createElement('p');
+    p.textContent = text;
+    drinkOptions.appendChild(p);
+}
+
+function clearDrinkOptions() {
+    drinkOptions.textContent = '';
+}
+
+function showDrinkOptions(targetMg, target) {
+    clearDrinkOptions();
+
+    const picks = bestCombos(targetMg);
+    if (!picks.length) return;
+
+    addLine(`Ways to get there, closest first:`);
+
+    picks.forEach((c, i) => {
+        const gap = c.diff === 0
+            ? 'right on target'
+            : `${c.diff > 0 ? '+' : '−'}${Math.abs(c.diff)} mg`;
+        addLine(`${i === 0 ? 'Best match: ' : ''}${describeCombo(c)} = ${c.total} mg (${gap})`);
+    });
+
+    // What the top pick actually buys you
+    const best = picks[0];
+    if (best.total > LOW_THRESHOLD_MG) {
+        const hours = HALF_LIFE_HOURS * Math.log2(best.total / LOW_THRESHOLD_MG);
+        const until = new Date(Date.now() + hours * 3600000);
+        const verdict = until.getTime() >= target.getTime()
+            ? `carries you past ${formatTime(target)}, to about ${formatTime(until)}`
+            : `runs out around ${formatTime(until)}, a little short of ${formatTime(target)}`;
+        addLine(`The best match ${verdict}.`);
+    }
+
+    addLine('Per serving: ' + DRINKS.map((d) => `${d.name} ${d.mg} mg`).join(', ') + '.');
+}
+
+
+// REVERSE CALCULATION
+// "Awake until X" is modelled as "still have LOW_THRESHOLD_MG on board at X".
+// Inverting the decay formula: dose = threshold * 2^(hours / half-life)
+const DAILY_CEILING_MG = 400;
+
+function targetDateFrom(value) {
+    const parts = String(value).split(':');
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return null;
+
+    const target = new Date();
+    target.setHours(h, m, 0, 0);
+    if (target.getTime() <= Date.now()) {
+        target.setDate(target.getDate() + 1);   // time already passed today, assume tomorrow
+    }
+    return target;
+}
+
+function doseNeededFor(hours) {
+    return LOW_THRESHOLD_MG * Math.pow(2, hours / HALF_LIFE_HOURS);
+}
+
+reverseButton.addEventListener('click', () => {
+    reverseResult.style.color = "#000000";
+    reverseResult.style.textDecoration = "none"
+    const target = targetDateFrom(targetTimeInput.value);
+    if (!target) {
+        alert('Pick a time first.');
+        return;
+    }
+
+    const hours = (target.getTime() - Date.now()) / 3600000;
+    const exact = doseNeededFor(hours);
+    const rounded = Math.ceil(exact / STEP_MG) * STEP_MG;   // round up so you clear the threshold
+
+    if (rounded > MAX_MG) {
+        clearDrinkOptions();
+        reverseResult.textContent =
+            `Staying above ${LOW_THRESHOLD_MG} mg until ${formatTime(target)} ` +
+            `(${hours.toFixed(1)} h away) would take roughly ${Math.round(exact)} mg in one go — ` +
+            `past the ${MAX_MG} mg this calculator handles. A smaller dose later in the day gets you ` +
+            `there with far less caffeine.`;
+        return;
+    }
+
+    setValue(rounded);
+    dose = { amount: caffeineValue, time: new Date() };
+    render();
+
+    let text =
+        `Drink about ${caffeineValue} mg now to still have ${LOW_THRESHOLD_MG} mg on board at ` +
+        `${formatTime(target)}, ${hours.toFixed(1)} h from now.`;
+
+    if (caffeineValue > DAILY_CEILING_MG) {
+        reverseResult.style.color = "#d11212";
+        reverseResult.style.textDecoration = "underline"
+        text += ` THAT IS ABOVE the ${DAILY_CEILING_MG} mg a day most guidance treats as a ceiling for adults.`;
+    }
+
+    reverseResult.textContent = text;
+    showDrinkOptions(caffeineValue, target);
+});
+
 
 // SUMMARY TEXT
 function updateSummary() {
