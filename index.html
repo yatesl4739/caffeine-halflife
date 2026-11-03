@@ -29,6 +29,7 @@
     </svg>
 
 <button id="action-btn">Calculate</button>
+<button id="save-btn">Save dose</button>
 
     <p>Or work backwards &mdash; I want to be awake until</p>
     <input type="time" id="target-time" value="23:00">
@@ -39,6 +40,10 @@
 
     <p id="summary"></p>
     <canvas id="chart"></canvas>
+
+    <p id="log-heading"></p>
+    <div id="log-entries"></div>
+    <button id="clear-log-btn" hidden>Clear saved log</button>
 </main>
 <script src="script.js"></script>
 </body>

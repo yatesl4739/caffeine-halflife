@@ -7,6 +7,12 @@ const MAX_MG = 600;
 const STEP_MG = 5;
 const CX = 150, CY = 150, R = 120;   // must match the SVG path
 
+const STORAGE_KEY = 'caffeine-log-v1';
+const MAX_STORED = 200;              // cap so the log can't grow forever
+const MAX_LOG_ROWS = 12;             // most recent entries shown on screen
+const ACTIVE_HOURS = 36;             // after this a dose is below 1% and ignored
+const PLOT_LOOKBACK_HOURS = 12;      // how far back the chart's x-axis reaches
+
 
 // ELEMENTS
 const submitButton = document.getElementById('action-btn');
@@ -22,29 +28,76 @@ const targetTimeInput = document.getElementById('target-time');
 const reverseButton = document.getElementById('reverse-btn');
 const reverseResult = document.getElementById('reverse-result');
 const drinkOptions = document.getElementById('drink-options');
+const saveButton = document.getElementById('save-btn');
+const logHeading = document.getElementById('log-heading');
+const logEntries = document.getElementById('log-entries');
+const clearLogButton = document.getElementById('clear-log-btn');
 
-//say hello!
-const coffee = String.raw`
-          ( (
-           ) )
-        ........
-        |      |]
-        \      /
-         \____/
-       __________
-      |__________|
 
-    Caffeine Calculator
-    Made by Liam Yates
-`;
-
-console.log(
-  "%c" + coffee,
-  "color: #B87333; font-family: monospace; font-size: 18px; font-weight: bold; line-height: 1.3;"
-);
 
 // STATE
-let dose = null; // { amount, time }
+let doses = [];        // saved, persisted: { id, amount, time }
+let preview = null;    // unsaved "what if" from Calculate: { amount, time }
+let logRows = [];      // { dose, leftEl } so the per-second tick can update text
+let storageWorks = true;
+
+
+// STORAGE
+// localStorage rather than cookies: cookies are capped near 4 KB and get sent
+// with every HTTP request, neither of which suits a log that only the page reads.
+function loadLog() {
+    let raw;
+
+    // Reading at all can throw when storage is blocked. That's a different
+    // problem from unreadable contents, so the two are caught separately.
+    try {
+        raw = localStorage.getItem(STORAGE_KEY);
+    } catch (err) {
+        console.warn('Storage is unavailable:', err);
+        storageWorks = false;
+        return [];
+    }
+
+    if (!raw) return [];
+
+    try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+
+        return parsed
+            .map((e) => ({
+                id: String(e && e.id),
+                amount: Number(e && e.amount),
+                time: new Date(e && e.time)
+            }))
+            .filter((e) => e.amount > 0 && isFinite(e.amount) && !isNaN(e.time.getTime()))
+            .sort((a, b) => a.time - b.time);
+    } catch (err) {
+        // Unreadable contents: start clean rather than wedging the page.
+        console.warn('Saved log was unreadable, starting empty:', err);
+        return [];
+    }
+}
+
+function saveLog() {
+    try {
+        const payload = doses.slice(-MAX_STORED).map((d) => ({
+            id: d.id,
+            amount: d.amount,
+            time: d.time.toISOString()
+        }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        storageWorks = true;
+    } catch (err) {
+        console.warn('Could not save the log:', err);
+        storageWorks = false;
+    }
+}
+
+function newId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
 
 // MATH
 function caffeineRemaining(initialAmount, hoursPassed) {
@@ -53,6 +106,38 @@ function caffeineRemaining(initialAmount, hoursPassed) {
 
 function hoursSince(time) {
     return (Date.now() - time.getTime()) / 3600000;
+}
+
+// Doses old enough to contribute less than ~1% are dropped from the maths,
+// but they stay in storage so the log keeps its history.
+function activeDoses() {
+    return doses.filter((d) => hoursSince(d.time) <= ACTIVE_HOURS);
+}
+
+// Total on board at a given moment (ms), summing every dose already taken.
+function totalAt(ms, list) {
+    return list.reduce((sum, d) => {
+        const hours = (ms - d.time.getTime()) / 3600000;
+        return hours < 0 ? sum : sum + caffeineRemaining(d.amount, hours);
+    }, 0);
+}
+
+// Every dose is in the past, so the total only falls from here — which means a
+// binary search finds the crossing point without a closed-form inverse.
+function timeBelowThreshold(list, fromMs) {
+    if (!list.length) return null;
+    if (totalAt(fromMs, list) < LOW_THRESHOLD_MG) return null;
+
+    let lo = fromMs;
+    let hi = fromMs + 48 * 3600000;
+    if (totalAt(hi, list) >= LOW_THRESHOLD_MG) return null;   // still high in 48 h
+
+    for (let i = 0; i < 40; i++) {
+        const mid = (lo + hi) / 2;
+        if (totalAt(mid, list) >= LOW_THRESHOLD_MG) lo = mid;
+        else hi = mid;
+    }
+    return new Date(hi);
 }
 
 function formatTime(date) {
@@ -99,6 +184,7 @@ function valueFromPointer(clientX, clientY) {
 let dragging = false;
 
 gauge.addEventListener('pointerdown', (e) => {
+    preview = null;            // the old preview no longer matches the slider
     dragging = true;
     gauge.setPointerCapture(e.pointerId);
     setValue(valueFromPointer(e.clientX, e.clientY));
@@ -121,24 +207,122 @@ gauge.addEventListener('keydown', (e) => {
     else if (e.key === 'Home') setValue(MIN_MG);
     else if (e.key === 'End') setValue(MAX_MG);
     else return;
+    preview = null;
     e.preventDefault();
 });
 
 setValue(caffeineValue);
 // HANDLE CAFFEINE INPUT
+// Calculate only previews: nothing is written to storage until Save is pressed.
 function handleSubmit() {
     if (caffeineValue <= 0) {
         alert('Set an amount greater than 0 mg.');
         return;
     }
 
-    dose = { amount: caffeineValue, time: new Date() };
+    preview = { amount: caffeineValue, time: new Date() };
     reverseResult.textContent = '';   // the old recommendation no longer matches
     clearDrinkOptions();
     render();
 }
 
 submitButton.addEventListener('click', handleSubmit);
+
+
+// SAVING DOSES
+function saveDose() {
+    const amount = preview ? preview.amount : caffeineValue;
+    if (amount <= 0) {
+        alert('Set an amount greater than 0 mg.');
+        return;
+    }
+
+    // Stamped with the moment Save is pressed, not when Calculate was.
+    doses.push({ id: newId(), amount: amount, time: new Date() });
+    doses.sort((a, b) => a.time - b.time);
+    preview = null;
+
+    saveLog();
+    renderLog();
+    render();
+}
+
+function removeDose(id) {
+    doses = doses.filter((d) => d.id !== id);
+    saveLog();
+    renderLog();
+    render();
+}
+
+function clearLog() {
+    if (!doses.length) return;
+    if (!confirm('Delete every saved dose? This cannot be undone.')) return;
+
+    doses = [];
+    saveLog();
+    renderLog();
+    render();
+}
+
+saveButton.addEventListener('click', saveDose);
+clearLogButton.addEventListener('click', clearLog);
+
+
+// LOG LIST
+// Rebuilt only when the log changes; the per-second tick just rewrites the
+// "mg left" text, so the Remove buttons aren't destroyed mid-click.
+function formatDateTime(date) {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+
+    if (date.getTime() >= midnight.getTime()) return formatTime(date);
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + formatTime(date);
+}
+
+function renderLog() {
+    logEntries.textContent = '';
+    logRows = [];
+    clearLogButton.hidden = !doses.length;
+
+    if (!doses.length) {
+        logHeading.textContent = storageWorks
+            ? 'No doses saved yet. Press Save dose to start logging.'
+            : 'No doses saved yet — this browser is blocking storage, so nothing will persist.';
+        return;
+    }
+
+    const shown = doses.slice().reverse().slice(0, MAX_LOG_ROWS);
+    logHeading.textContent = `Saved doses: ${doses.length}` +
+        (shown.length < doses.length ? ` (showing the latest ${shown.length})` : '') +
+        (storageWorks ? '' : ' — storage is blocked, so these will vanish on reload');
+
+    shown.forEach((d) => {
+        const row = document.createElement('p');
+
+        const label = document.createElement('span');
+        label.textContent = `${formatDateTime(d.time)} — ${d.amount} mg, `;
+
+        const leftEl = document.createElement('span');
+
+        const removeBtn = document.createElement('button');
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', () => removeDose(d.id));
+
+        row.append(label, leftEl, document.createTextNode(' '), removeBtn);
+        logEntries.appendChild(row);
+        logRows.push({ dose: d, leftEl: leftEl });
+    });
+
+    updateLogValues();
+}
+
+function updateLogValues() {
+    const now = Date.now();
+    logRows.forEach((row) => {
+        const left = caffeineRemaining(row.dose.amount, (now - row.dose.time.getTime()) / 3600000);
+        row.leftEl.textContent = `${left.toFixed(1)} mg left`;
+    });
+}
 
 
 // KNOWN DRINKS
@@ -290,7 +474,7 @@ reverseButton.addEventListener('click', () => {
     }
 
     setValue(rounded);
-    dose = { amount: caffeineValue, time: new Date() };
+    preview = { amount: caffeineValue, time: new Date() };   // still unsaved
     render();
 
     let text =
@@ -310,18 +494,31 @@ reverseButton.addEventListener('click', () => {
 
 // SUMMARY TEXT
 function updateSummary() {
-    if (!dose) {
+    const now = Date.now();
+    const saved = activeDoses();
+
+    if (!saved.length && !preview) {
         summary.textContent = '';
         return;
     }
 
-    const left = caffeineRemaining(dose.amount, hoursSince(dose.time));
-    let text = `Right now: ${left.toFixed(1)} mg of ${dose.amount} mg`;
+    let text;
 
-    if (dose.amount > LOW_THRESHOLD_MG) {
-        const hours = HALF_LIFE_HOURS * Math.log2(dose.amount / LOW_THRESHOLD_MG);
-        const when = new Date(dose.time.getTime() + hours * 3600000);
-        text += ` — drops below ${LOW_THRESHOLD_MG} mg around ${formatTime(when)}`;
+    if (saved.length) {
+        const onBoard = totalAt(now, saved);
+        text = `Right now: ${onBoard.toFixed(1)} mg from ${saved.length} dose${saved.length === 1 ? '' : 's'}`;
+
+        const clearsAt = timeBelowThreshold(saved, now);
+        if (clearsAt) text += ` — below ${LOW_THRESHOLD_MG} mg around ${formatTime(clearsAt)}`;
+    } else {
+        text = 'Right now: nothing on board';
+    }
+
+    if (preview) {
+        const clearsAt = timeBelowThreshold(saved.concat([preview]), now);
+        text += `. Previewing ${preview.amount} mg more`;
+        if (clearsAt) text += `, which would hold you to about ${formatTime(clearsAt)}`;
+        text += ' (not saved)';
     }
 
     summary.textContent = text;
@@ -340,26 +537,45 @@ function drawChart() {
     const H = rect.height;
     ctx.clearRect(0, 0, W, H);
 
-    if (!dose) {
+    const now = Date.now();
+    const saved = activeDoses();
+    const projected = preview ? saved.concat([preview]) : saved;
+
+    if (!projected.length) {
         ctx.fillStyle = '#888';
-        ctx.font = '14px sans-serif';
+        ctx.font = '14px Oswald, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('Enter an amount to see the graph', W / 2, H / 2);
+        ctx.fillText('Save a dose, or press Calculate to preview one', W / 2, H / 2);
         return;
     }
+
+    // The window is anchored to now, not to a single dose: back as far as the
+    // oldest dose still on board (capped), and HOURS_TO_PLOT forward.
+    const earliest = Math.min.apply(null, projected.map((d) => d.time.getTime()));
+    const start = Math.min(now, Math.max(earliest, now - PLOT_LOOKBACK_HOURS * 3600000));
+    const end = now + HOURS_TO_PLOT * 3600000;
+    const spanMs = end - start;
 
     const pad = { top: 16, right: 16, bottom: 34, left: 48 };
     const plotW = W - pad.left - pad.right;
     const plotH = H - pad.top - pad.bottom;
-    const yMax = niceMax(dose.amount);
 
-    const xFor = (h) => pad.left + (h / HOURS_TO_PLOT) * plotW;
+    const xFor = (ms) => pad.left + ((ms - start) / spanMs) * plotW;
+
+    // Pre-pass for the peak, since with several doses the maximum isn't just
+    // the largest one — overlapping curves stack.
+    const SAMPLES = 240;
+    let peak = 0;
+    for (let i = 0; i <= SAMPLES; i++) {
+        peak = Math.max(peak, totalAt(start + (spanMs * i) / SAMPLES, projected));
+    }
+    const yMax = Math.max(niceMax(peak), 10);
     const yFor = (mg) => pad.top + (1 - mg / yMax) * plotH;
 
     // Horizontal grid lines + y labels
     ctx.strokeStyle = '#ddd';
     ctx.fillStyle = '#666';
-    ctx.font = '12px sans-serif';
+    ctx.font = '12px Oswald, sans-serif';
     ctx.lineWidth = 1;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
@@ -374,55 +590,79 @@ function drawChart() {
         ctx.fillText(Math.round(mg), pad.left - 8, y);
     }
 
-    // X labels every 4 hours
+    // X labels: pick an hour step that keeps the axis to about six labels,
+    // then start from a whole hour so the times read cleanly.
+    const spanHours = spanMs / 3600000;
+    const STEP_CHOICES = [1, 2, 3, 4, 6, 8, 12, 24];
+    const stepHours = STEP_CHOICES.find((s) => spanHours / s <= 7) || 24;
+
+    const firstLabel = new Date(start);
+    firstLabel.setMinutes(0, 0, 0);
+    if (firstLabel.getTime() < start) firstLabel.setHours(firstLabel.getHours() + 1);
+
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    for (let h = 0; h <= HOURS_TO_PLOT; h += 4) {
-        const label = new Date(dose.time.getTime() + h * 3600000);
-        ctx.fillText(formatTime(label), xFor(h), pad.top + plotH + 8);
+    for (let ms = firstLabel.getTime(); ms <= end; ms += stepHours * 3600000) {
+        ctx.fillText(formatTime(new Date(ms)), xFor(ms), pad.top + plotH + 8);
     }
 
-    // The decay curve
-    ctx.beginPath();
-    for (let h = 0; h <= HOURS_TO_PLOT; h += 0.1) {
-        const x = xFor(h);
-        const y = yFor(caffeineRemaining(dose.amount, h));
-        if (h === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = '#67320a';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    // Shade under it
-    ctx.lineTo(xFor(HOURS_TO_PLOT), yFor(0));
-    ctx.lineTo(xFor(0), yFor(0));
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(192, 86, 43, 0.12)';
-    ctx.fill();
-
-    // "Now" marker, as long as it's still on screen
-    const elapsed = hoursSince(dose.time);
-    if (elapsed >= 0 && elapsed <= HOURS_TO_PLOT) {
-        const x = xFor(elapsed);
-        const y = yFor(caffeineRemaining(dose.amount, elapsed));
+    // Trace the summed curve for a set of doses
+    function traceCurve(list) {
         ctx.beginPath();
-        ctx.moveTo(x, pad.top);
-        ctx.lineTo(x, pad.top + plotH);
-        ctx.strokeStyle = '#3b7dd8';
-        ctx.setLineDash([4, 4]);
+        for (let i = 0; i <= SAMPLES; i++) {
+            const ms = start + (spanMs * i) / SAMPLES;
+            const x = xFor(ms);
+            const y = yFor(totalAt(ms, list));
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+    }
+
+    // The preview sits on top of the saved total, drawn dashed so it reads as
+    // "what would happen" rather than "what is logged".
+    if (preview) {
+        traceCurve(projected);
+        ctx.strokeStyle = '#67320a';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 4]);
         ctx.stroke();
         ctx.setLineDash([]);
+    }
 
-        ctx.beginPath();
-        ctx.arc(x, y, 4, 0, Math.PI * 2);
-        ctx.fillStyle = '#3b7dd8';
+    if (saved.length) {
+        traceCurve(saved);
+        ctx.strokeStyle = '#67320a';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Shade under it
+        ctx.lineTo(xFor(end), yFor(0));
+        ctx.lineTo(xFor(start), yFor(0));
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(192, 86, 43, 0.12)';
         ctx.fill();
     }
+
+    // "Now" marker
+    const nowX = xFor(now);
+    ctx.beginPath();
+    ctx.moveTo(nowX, pad.top);
+    ctx.lineTo(nowX, pad.top + plotH);
+    ctx.strokeStyle = '#3b7dd8';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.beginPath();
+    ctx.arc(nowX, yFor(totalAt(now, saved)), 4, 0, Math.PI * 2);
+    ctx.fillStyle = '#3b7dd8';
+    ctx.fill();
 }
 
 function render() {
     updateSummary();
+    updateLogValues();
     drawChart();
 }
 
@@ -430,8 +670,20 @@ function render() {
 function updateClock() {
     const now = new Date();
     clock.textContent = `Current time: ${now.toLocaleTimeString()}`;
-    render(); // keeps the "now" marker and mg readout moving
+    render(); // keeps the "now" marker and mg readouts moving
 }
+
+// STARTUP
+doses = loadLog();
+renderLog();
+
+// A second tab may have logged a dose; pick it up without a reload.
+window.addEventListener('storage', (e) => {
+    if (e.key !== STORAGE_KEY) return;
+    doses = loadLog();
+    renderLog();
+    render();
+});
 
 updateClock();
 setInterval(updateClock, 1000);
